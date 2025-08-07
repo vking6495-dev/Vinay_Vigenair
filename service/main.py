@@ -23,32 +23,46 @@ Function, with `gcs_file_uploaded` as the main entry point.
 import logging
 from typing import Any, Dict
 
+# Import FastAPI and uvicorn
+from fastapi import FastAPI
+import uvicorn
+
 import combiner as CombinerService
 import config as ConfigService
 import extractor as ExtractorService
-import functions_framework
+# functions_framework is no longer needed for Uvicorn-based local testing
+# import functions_framework
 from google.api_core.client_info import ClientInfo
 from google.cloud import logging as cloudlogging
 import utils as Utils
 
+# Initialize FastAPI app
+app = FastAPI()
 
-@functions_framework.cloud_event
-def gcs_file_uploaded(cloud_event: Dict[str, Any]):
-  """Triggered by a change in a storage bucket.
+# Configure Google Cloud Logging client
+lg_client = cloudlogging.Client(
+    client_info=ClientInfo(user_agent=ConfigService.USER_AGENT_ID)
+)
+lg_client.setup_logging()
+
+# Define the core logic of your Cloud Function as a regular Python function
+# The @functions_framework.cloud_event decorator is removed as FastAPI handles routing
+def process_gcs_file_event(cloud_event_data: Dict[str, Any]):
+  """Processes a simulated Cloud Storage event.
 
   Args:
-    cloud_event: The Eventarc trigger event.
+    cloud_event_data: A dictionary representing the Cloud Storage event payload.
   """
-  lg_client = cloudlogging.Client(
-      client_info=ClientInfo(user_agent=ConfigService.USER_AGENT_ID)
-  )
-  lg_client.setup_logging()
+  # Access 'data' key from the cloud_event_data dictionary
+  data = cloud_event_data.get('data', {})
+  bucket = data.get('bucket')
+  filepath = data.get('name')
 
-  data = cloud_event.data
-  bucket = data['bucket']
-  filepath = data['name']
+  if not bucket or not filepath:
+      logging.error("Invalid event data: 'bucket' or 'name' missing.")
+      return {"status": "error", "message": "Invalid event data."}
 
-  logging.info('BEGIN - Processing uploaded file: %s...', filepath)
+  logging.info('BEGIN - Processing uploaded file: %s from bucket %s...', filepath, bucket)
 
   trigger_file = Utils.TriggerFile(filepath)
 
@@ -109,5 +123,29 @@ def gcs_file_uploaded(cloud_event: Dict[str, Any]):
         gcs_bucket_name=bucket, render_file=trigger_file
     )
     combiner_instance.finalise_render()
+  else:
+      logging.info('No specific trigger matched for file: %s', filepath)
+
 
   logging.info('END - Finished processing uploaded file: %s.', filepath)
+  return {"status": "processed", "filepath": filepath}
+
+# Define a FastAPI endpoint to receive the event data
+@app.post("/trigger-event")
+async def trigger_event(cloud_event_payload: Dict[str, Any]):
+    """
+    Endpoint to simulate a Cloud Storage event.
+    Send a POST request with the Cloud Event JSON payload.
+    """
+    logging.info("Received request to /trigger-event with payload: %s", cloud_event_payload)
+    result = process_gcs_file_event(cloud_event_payload)
+    return result
+
+# Optional: Add a simple root endpoint to check if the server is running
+@app.get("/")
+async def read_root():
+    return {"message": "Vigenair backend is running. Use /trigger-event to send Cloud Storage events."}
+
+# This block allows you to run the application directly using `python main.py`
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
